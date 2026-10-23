@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function ownUser(uid) { return signedIn() && request.auth.uid == uid; }
+    function isAdmin() {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'active';
+    }
+
+    match /users/{uid} {
+      allow read: if ownUser(uid) || isAdmin();
+      allow create: if ownUser(uid)
+        && request.resource.data.role in ['client', 'provider']
+        && request.resource.data.status == 'active';
+      allow update: if isAdmin() || (ownUser(uid)
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.status == resource.data.status);
+      allow delete: if isAdmin();
+    }
+
+    match /listings/{listingId} {
+      allow read: if resource.data.status == 'approved' || isAdmin()
+        || (signedIn() && resource.data.providerId == request.auth.uid);
+      // Create listings through the submitListing Cloud Function only.
+      allow create: if false;
+      allow update, delete: if isAdmin();
+    }
+
+    match /custom_requests/{requestId} {
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    match /booking_requests/{requestId} {
+      allow create: if signedIn() && request.resource.data.clientId == request.auth.uid
+        && request.resource.data.status == 'pending';
+      allow read: if isAdmin() || (signedIn() && resource.data.clientId == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow read: if isAdmin() || (signedIn() &&
+        (resource.data.clientId == request.auth.uid || resource.data.providerId == request.auth.uid));
+      allow write: if false; // Server-only order/payment state transitions.
+    }
+
+    match /admin_notifications/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /payments/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.clientId == request.auth.uid);
+      allow write: if false; // Only verified server webhooks may write payment status.
+    }
+  }
+}
